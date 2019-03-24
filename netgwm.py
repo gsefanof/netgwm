@@ -190,8 +190,8 @@ class GatewayManager:
 
     @staticmethod
     def get_current_gateway(gateways):
-        currentgw_ip  = os.popen("/sbin/ip route | grep 'default via' | sed -r 's/default via (([0-9]+\.){3}[0-9]+) dev .+/\\1/g'").read().strip()
-        currentgw_dev = os.popen("/sbin/ip route | grep 'default dev' | sed -r 's/default dev ([a-z0-9]+)(\s+.*)?/\\1/g'").read().strip()
+        currentgw_ip  = os.popen("/sbin/ip route | grep 'default ' | head -n 1 | grep 'default via' | sed -r 's/default via (([0-9]+\.){3}[0-9]+) dev .+/\\1/g'").read().strip()
+        currentgw_dev = os.popen("/sbin/ip route | grep 'default ' | head -n 1 | grep 'default dev' | sed -r 's/default dev ([a-z0-9]+)(\s+.*)?/\\1/g'").read().strip()
 
         if currentgw_ip == '' and currentgw_dev == '':
             return None

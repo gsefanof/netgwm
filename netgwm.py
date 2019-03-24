@@ -58,6 +58,10 @@ def main():
       for gw_identifier, gw_data in config['gateways'].iteritems():
           gateways.append(GatewayManager(gwstore, identifier=gw_identifier, **gw_data))
 
+    for gw in sorted(gateways, key = lambda x: x.priority):
+      gw.check_and_update_route()
+      gw.check_and_update_rule()
+
     currentgw = GatewayManager.get_current_gateway(gateways)
 
     try:
@@ -123,6 +127,16 @@ class GatewayManager:
         if 'ip'  in kwargs and kwargs['ip']  is not None: self.ip  = kwargs['ip']
         if 'dev' in kwargs and kwargs['dev'] is not None: self.dev = kwargs['dev']
 
+        self.rule_pref = 10000
+        if 'rule_pref' in kwargs and kwargs['rule_pref'] is not None: self.rule_pref = kwargs['rule_pref']
+
+        if 'src' in kwargs and kwargs['src']  is not None:
+            self.src  = kwargs['src']
+        else:
+            # Trying to detect src
+            if 'ip'  in kwargs: self.src = os.popen("/sbin/ip route get %s | head -n 1 | sed -r 's/.+ src (([0-9]+\.){3}[0-9]+) .+/\\1/g'" % self.ip).read().strip()
+            if 'dev' in kwargs: self.src = os.popen("/sbin/ip route | grep 'dev %s' | grep 'src' | sed -r 's/.+ src (([0-9]+\.){3}[0-9]+) .+/\\1/g'" % self.dev).read().strip()
+
         if self.identifier in gwstore: self.wakeuptime = gwstore[self.identifier]['wakeuptime']
         else: self.wakeuptime = 0 # When a gateway appears for the first time, its uptime is set to something BIG
 
@@ -133,37 +147,25 @@ class GatewayManager:
     def check(self, check_sites):
         # Checking gateway status
         print 'checking ' + self.identifier
-        ipresult = not os.system('/sbin/ip route replace default %s table netgwm_check' % self.generate_route())
 
-        if ipresult is True:
-            for site in check_sites:
-                try:
-                    site_ip = socket.gethostbyname(site)
+        for site in check_sites:
+            try:
+                site_ip = socket.gethostbyname(site)
+                p       = os.popen('ping -q -n -W 1 -c 2 -I %s %s 2> /dev/null' % (self.src, site_ip))
+                pingout = p.read()
+                status  = not p.close()
 
-                    os.system('/sbin/ip rule add iif lo to %s lookup netgwm_check' % site_ip)
+                if status is True:
+                    # Ping has been successful
+                    rtt  = re.search('\d+\.\d+/(\d+\.\d+)/\d+\.\d+/\d+\.\d+', pingout).group(1)
+                    info = 'up:'+site+':'+rtt
+                    break
+                else:
+                    # Ping has failed
+                    info = 'down'
 
-                    p       = os.popen('ping -q -n -W 1 -c 2 %s 2> /dev/null' % site_ip)
-                    pingout = p.read()
-                    status  = not p.close()
-
-                    os.system('/sbin/ip rule del iif lo to %s lookup netgwm_check' % site_ip)
-
-                    if status is True:
-                        # Ping has been successful
-                        rtt  = re.search('\d+\.\d+/(\d+\.\d+)/\d+\.\d+/\d+\.\d+', pingout).group(1)
-                        info = 'up:'+site+':'+rtt
-                        break
-                    else:
-                        # Ping has failed
-                        info = 'down'
-
-                except:
-                    status = False
-
-            os.system('/sbin/ip route del default %s table netgwm_check' % self.generate_route())
-        else:
-            status = False
-            info   = 'down'
+            except:
+                status = False
 
         try:
             with open('/var/run/netgwm/'+self.identifier, 'w') as f: f.write(info)
@@ -175,6 +177,21 @@ class GatewayManager:
         self.is_checked = True
 
         return status
+
+    def check_and_update_route(self):
+        # Replacing route for self table, if it not exist
+        if os.popen('/sbin/ip route list table %s | grep -q "%s"' % (self.identifier, self.generate_route())).close():
+            print '/sbin/ip route replace default %s table %s' % (self.generate_route(), self.identifier)
+            os.system('/sbin/ip route replace default %s table %s' % (self.generate_route(), self.identifier))
+            logging.info('route for table %s replaced to: %s' % (self.identifier, self.generate_route()))
+
+    def check_and_update_rule(self):
+        # Add rule for self table, if it not exist
+        if os.popen('/sbin/ip rule list from %s pref %s table %s | /bin/wc -l ' % (self.src, self.rule_pref, self.identifier)).read().strip() == '0':
+            print '/sbin/ip rule add from %s pref %s table %s' % (self.src, self.rule_pref, self.identifier)
+            os.system('/sbin/ip rule add from %s pref %s table %s' % (self.src, self.rule_pref, self.identifier))
+            logging.info('rule added: from %s pref %s table %s' % (self.src, self.rule_pref, self.identifier))
+
 
     def setdefault(self):
         # Replacing route
